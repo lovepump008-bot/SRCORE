@@ -1,9 +1,7 @@
 --[[
-    NEXT HUB — PORBOX PVP v3
-    - Cached humanoid scan (fix FPS drop)
-    - FOV circle (Drawing API)
-    - Aim key = Right Mouse Button (E can conflict with game)
-    - Debug print when target locked
+    NEXT HUB — PORBOX PVP  v8
+    Minimal UX: just toggle + aim, no fiddly knobs
+    Right Shift / Insert / End = toggle UI (multiple fallbacks)
 ]]
 
 local repo = "https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/"
@@ -16,139 +14,91 @@ local LP         = Players.LocalPlayer
 local function Cam() return workspace.CurrentCamera end
 
 local State = {
-    Aimbot      = false,
-    TriggerMode = "Hold Key",
-    AimKey      = "MouseRight",   -- "MouseRight" / "MouseLeft" / "E" / "Q" / "C"
-    AimPoint    = "Head",
-    FOV         = 180,
-    Smoothing   = 0.4,
-    IgnoreNPCs  = false,
-    TeamCheck   = false,
-    WallCheck   = false,
-
-    ShowFOV     = true,
-    FOVColor    = Color3.fromRGB(255, 255, 255),
-
-    ESP         = false,
-    NameTag     = false,
-    ESPColor    = Color3.fromRGB(255, 50, 50),
-    MaxESP      = 15,
-    MaxDist     = 500,
-
-    NoRecoil    = false,
+    Aimbot    = false,
+    AimPart   = "Head",
+    ESP       = false,
+    NameTag   = false,
+    NoRecoil  = false,
 }
 
-local colorDirty = true
-
-local toggleState = false
-local espCache    = {}
+-- fixed sensible defaults (no sliders)
+local AIM_FOV       = 300        -- wide net
+local AIM_SMOOTH    = 0.5        -- half-snap
+local AIM_PREDICT   = 0.12
+local ESP_MAX       = 20
+local ESP_MAX_DIST  = 1000
+local AIM_KEY_MOUSE = Enum.UserInputType.MouseButton2  -- right click = aim
 
 -- ============================================================
--- UI
+-- Window
 -- ============================================================
 local Window = Library:CreateWindow({
-    Title = "NEXT HUB  |  v3  |  PORBOX",
+    Title = "NEXT HUB  |  v8",
     Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0.2,
 })
 
 local Tabs = {
-    Home    = Window:AddTab("Home"),
-    Combat  = Window:AddTab("Combat"),
-    Visuals = Window:AddTab("Visuals"),
-    System  = Window:AddTab("System"),
+    Main = Window:AddTab("Main"),
+    More = Window:AddTab("More"),
 }
 
 do
-    local b = Tabs.Home:AddLeftGroupbox("Info")
-    b:AddLabel("Place:   " .. game.PlaceId)
-    b:AddLabel("Player:  " .. LP.Name)
-    b:AddLabel("UI Toggle:   Right Shift")
-    b:AddLabel("Aimbot Key:  Right Mouse (default)")
-end
-
--- Combat
-do
-    local L = Tabs.Combat:AddLeftGroupbox("Aimbot")
-    local R = Tabs.Combat:AddRightGroupbox("Filters")
-
-    L:AddToggle("Aimbot", { Text = "Aimbot", Default = false, Callback = function(v) State.Aimbot = v end })
+    local L = Tabs.Main:AddLeftGroupbox("Combat")
+    L:AddToggle("Aimbot", { Text = "Aimbot  (hold Right Mouse)", Default = false, Callback = function(v) State.Aimbot = v end })
+    L:AddDropdown("AimPart", {
+        Text = "Aim at",
+        Values = { "Head", "HumanoidRootPart", "UpperTorso" },
+        Default = "Head",
+        Callback = function(v) State.AimPart = v end,
+    })
     L:AddToggle("NoRecoil", { Text = "No Recoil (cam lock)", Default = false, Callback = function(v) State.NoRecoil = v end })
 
-    L:AddDropdown("TriggerMode", {
-        Text = "Trigger", Values = { "Hold Key", "Toggle Key", "Always" }, Default = "Hold Key",
-        Callback = function(v) State.TriggerMode = v end,
-    })
-    L:AddDropdown("AimKey", {
-        Text = "Aim Key",
-        Values = { "MouseRight", "MouseLeft", "E", "Q", "C", "F", "V" },
-        Default = "MouseRight",
-        Callback = function(v) State.AimKey = v end,
-    })
-    L:AddDropdown("AimPoint", {
-        Text = "Aim Point",
-        Values = { "Head", "HumanoidRootPart", "UpperTorso", "Torso" },
-        Default = "Head",
-        Callback = function(v) State.AimPoint = v end,
-    })
-    L:AddSlider("FOV", { Text = "FOV (deg)", Default = 180, Min = 10, Max = 360, Rounding = 0,
-        Callback = function(v) State.FOV = v end })
-    L:AddSlider("Smoothing", { Text = "Smoothing", Default = 0.4, Min = 0.05, Max = 1, Rounding = 2,
-        Callback = function(v) State.Smoothing = v end })
+    local R = Tabs.Main:AddRightGroupbox("ESP")
+    R:AddToggle("ESP",     { Text = "Highlight players", Default = false, Callback = function(v) State.ESP = v end })
+    R:AddToggle("NameTag", { Text = "Name + Distance",   Default = false, Callback = function(v) State.NameTag = v end })
 
-    R:AddToggle("IgnoreNPCs", { Text = "Ignore NPCs (players only)", Default = false, Callback = function(v) State.IgnoreNPCs = v end })
-    R:AddToggle("TeamCheck",  { Text = "Team Check",                 Default = false, Callback = function(v) State.TeamCheck = v end })
-    R:AddToggle("WallCheck",  { Text = "Wall Check",                 Default = false, Callback = function(v) State.WallCheck = v end })
-end
-
--- Visuals
-do
-    local L = Tabs.Visuals:AddLeftGroupbox("ESP")
-    L:AddToggle("ESP",     { Text = "Highlight ESP",   Default = false, Callback = function(v) State.ESP = v end })
-    L:AddToggle("NameTag", { Text = "Name + Distance", Default = false, Callback = function(v) State.NameTag = v end })
-    L:AddLabel("ESP Color"):AddColorPicker("ESPColor", {
-        Default = Color3.fromRGB(255, 50, 50),
-        Callback = function(c) State.ESPColor = c; colorDirty = true end,
-    })
-    L:AddSlider("MaxESP", { Text = "Max ESP count", Default = 15, Min = 1, Max = 50, Rounding = 0,
-        Callback = function(v) State.MaxESP = v end })
-    L:AddSlider("MaxDist", { Text = "Max distance (m)", Default = 500, Min = 50, Max = 3000, Rounding = 0,
-        Callback = function(v) State.MaxDist = v end })
-
-    local R = Tabs.Visuals:AddRightGroupbox("FOV")
-    R:AddToggle("ShowFOV", { Text = "Show FOV circle", Default = true, Callback = function(v)
-        State.ShowFOV = v
-    end })
-    R:AddLabel("FOV Color"):AddColorPicker("FOVColor", {
-        Default = Color3.fromRGB(255, 255, 255),
-        Callback = function(c) State.FOVColor = c end,
-    })
-
-    local S = Tabs.Visuals:AddLeftGroupbox("Controls")
-    S:AddButton("Unload", function()
-        for _, pack in pairs(espCache) do
-            for _, inst in pairs(pack) do if typeof(inst) == "Instance" then inst:Destroy() end end
+    local B = Tabs.Main:AddLeftGroupbox("Window")
+    B:AddLabel("Press RIGHT SHIFT to hide/show UI")
+    B:AddButton("Hide UI now", function() Library.Toggled = false end)
+    B:AddButton("UNLOAD (remove everything)", function()
+        State.Aimbot = false; State.ESP = false; State.NameTag = false; State.NoRecoil = false
+        task.wait(0.2)
+        for _, d in ipairs(workspace:GetDescendants()) do
+            if d:IsA("Highlight") or d:IsA("BillboardGui") then d:Destroy() end
         end
-        espCache = {}
-        if fovCircle then fovCircle:Remove(); fovCircle = nil end
-        Library:Unload()
+        pcall(function() Library:Unload() end)
         _G.NEXTHUB_LOADED = nil
     end)
 end
 
 do
-    Tabs.System:AddLeftGroupbox("About"):AddLabel("NEXT HUB v3  —  PORBOX build  (cached scan)")
+    local L = Tabs.More:AddLeftGroupbox("Info")
+    L:AddLabel("Place:  " .. game.PlaceId)
+    L:AddLabel("Player: " .. LP.Name)
+    L:AddLabel("Aimbot: hold RIGHT MOUSE while enabled")
+    L:AddLabel("Aim target = closest enemy to crosshair")
 end
 
--- R-Shift toggle UI + toggle-mode key
+-- ============================================================
+-- UI toggle — multiple fallbacks
+-- ============================================================
+local function toggleUI()
+    pcall(function() Library.Toggled = not Library.Toggled end)
+    -- also try common Linoria methods
+    pcall(function() Library:Toggle() end)
+end
+
 UIS.InputBegan:Connect(function(input, processed)
     if processed then return end
-    if input.KeyCode == Enum.KeyCode.RightShift then
-        Library.Toggled = not Library.Toggled
+    if input.KeyCode == Enum.KeyCode.RightShift
+    or input.KeyCode == Enum.KeyCode.Insert
+    or input.KeyCode == Enum.KeyCode.End then
+        toggleUI()
     end
 end)
 
 -- ============================================================
--- Humanoid cache (refreshed every 0.25s)
+-- Humanoid cache (0.25s)
 -- ============================================================
 local humanoidCache = {}
 task.spawn(function()
@@ -164,216 +114,65 @@ task.spawn(function()
     end
 end)
 
-local function playerOwnerOf(model)
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Character == model then return p end
-    end
-    return nil
-end
-
-local function keyHeld()
-    local k = State.AimKey
-    if     k == "MouseRight" then return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
-    elseif k == "MouseLeft"  then return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-    elseif k == "E" then return UIS:IsKeyDown(Enum.KeyCode.E)
-    elseif k == "Q" then return UIS:IsKeyDown(Enum.KeyCode.Q)
-    elseif k == "C" then return UIS:IsKeyDown(Enum.KeyCode.C)
-    elseif k == "F" then return UIS:IsKeyDown(Enum.KeyCode.F)
-    elseif k == "V" then return UIS:IsKeyDown(Enum.KeyCode.V)
-    end
-    return false
-end
-
-UIS.InputBegan:Connect(function(input, processed)
-    if processed then return end
-    if State.TriggerMode == "Toggle Key" then
-        local k = State.AimKey
-        local match = false
-        if k == "MouseRight" and input.UserInputType == Enum.UserInputType.MouseButton2 then match = true end
-        if k == "MouseLeft"  and input.UserInputType == Enum.UserInputType.MouseButton1 then match = true end
-        if input.UserInputType == Enum.UserInputType.Keyboard and tostring(input.KeyCode) == "Enum.KeyCode." .. k then match = true end
-        if match then toggleState = not toggleState end
-    end
-end)
-
 -- ============================================================
--- Target
+-- Aim
 -- ============================================================
 local function getPart(model)
-    local wanted = State.AimPoint
-    local p = model:FindFirstChild(wanted)
+    local p = model:FindFirstChild(State.AimPart)
     if p and p:IsA("BasePart") then return p end
-    for _, n in ipairs({ "HumanoidRootPart", "UpperTorso", "Torso", "LowerTorso", "Head" }) do
+    for _, n in ipairs({ "HumanoidRootPart", "UpperTorso", "Torso", "Head" }) do
         local q = model:FindFirstChild(n)
         if q and q:IsA("BasePart") then return q end
     end
     return nil
 end
 
-local function lineOfSight(myHead, targetPart)
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { LP.Character, Cam() }
-    local r = workspace:Raycast(myHead.Position, targetPart.Position - myHead.Position, params)
-    if not r then return true end
-    return r.Instance:IsDescendantOf(targetPart.Parent)
-end
-
 local function getTarget()
     local cam = Cam()
     local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-    local fovPx = math.tan(math.rad(State.FOV) / 2) * cam.ViewportSize.Y
+    local fovPx = math.tan(math.rad(AIM_FOV) / 2) * cam.ViewportSize.Y
     local best, bestPart = fovPx, nil
-    local myHead = LP.Character and LP.Character:FindFirstChild("Head")
-
     for _, e in ipairs(humanoidCache) do
         local model = e.model
         if not model.Parent then continue end
-        if State.IgnoreNPCs and not playerOwnerOf(model) then continue end
-        if State.TeamCheck then
-            local p = playerOwnerOf(model)
-            if p and p.Team and p.Team == LP.Team then continue end
-        end
         local part = getPart(model)
         if not part then continue end
         local sp, onScreen = cam:WorldToViewportPoint(part.Position)
         if not onScreen then continue end
         local dist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-        if dist > best then continue end
-        if State.WallCheck and myHead and not lineOfSight(myHead, part) then continue end
-        best, bestPart = dist, part
+        if dist < best then best, bestPart = dist, part end
     end
     return bestPart
 end
 
--- ============================================================
--- Aimbot — two methods: CFrame write + mousemoverel fallback
--- Set AimMethod to pick
--- ============================================================
-State.AimMethod   = "mousemoverel"
-State.Snap        = false
-State.Predict     = true
-State.PredictMul  = 0.12
-State.ShowTargetLine = true
-
-do
-    local R = Tabs.Combat:AddRightGroupbox("Method")
-    R:AddDropdown("AimMethod", {
-        Text = "Aim method",
-        Values = { "mousemoverel", "cframe" },
-        Default = "mousemoverel",
-        Callback = function(v) State.AimMethod = v end,
-    })
-    R:AddToggle("Snap",    { Text = "Snap (ignore smoothing)", Default = false, Callback = function(v) State.Snap = v end })
-    R:AddToggle("Predict", { Text = "Predict velocity",         Default = true,  Callback = function(v) State.Predict = v end })
-    R:AddSlider("PredictMul", { Text = "Prediction amt", Default = 0.12, Min = 0, Max = 0.5, Rounding = 2,
-        Callback = function(v) State.PredictMul = v end })
-    R:AddToggle("ShowTargetLine", { Text = "Debug: target line", Default = true, Callback = function(v) State.ShowTargetLine = v end })
-    R:AddButton("Dump nearest target to console", function()
-        local myHrp = LP.Character and (LP.Character:FindFirstChild("HumanoidRootPart") or LP.Character:FindFirstChild("Head"))
-        if not myHrp then print("no local char"); return end
-        local best, bestD
-        for _, e in ipairs(humanoidCache) do
-            local hrp = e.model:FindFirstChild("HumanoidRootPart") or e.model:FindFirstChild("Head")
-            if hrp then
-                local d = (hrp.Position - myHrp.Position).Magnitude
-                if not bestD or d < bestD then bestD, best = d, e.model end
-            end
-        end
-        if not best then print("no target"); return end
-        print("=== DUMP " .. best.Name .. " ===")
-        for _, c in ipairs(best:GetChildren()) do
-            local pos = (c:IsA("BasePart") and tostring(c.Position)) or "-"
-            local vel = (c:IsA("BasePart") and tostring(c.AssemblyLinearVelocity)) or "-"
-            print(string.format("  %s  (%s)  pos=%s  vel=%s", c.Name, c.ClassName, pos, vel))
-        end
-    end)
-end
-
-local lastDebug = 0
 RunService.RenderStepped:Connect(function()
     if not State.Aimbot then return end
-    local mode = State.TriggerMode
-    local active = false
-    if     mode == "Hold Key"   then active = keyHeld()
-    elseif mode == "Toggle Key" then active = toggleState
-    elseif mode == "Always"     then active = true
-    end
-    if not active then return end
-
+    if not UIS:IsMouseButtonPressed(AIM_KEY_MOUSE) then return end
     local target = getTarget()
-    if not target then
-        if tick() - lastDebug > 1 then
-            print("[NextHub] no target in FOV")
-            lastDebug = tick()
-        end
-        return
-    end
+    if not target then return end
+
+    local pos = target.Position
+    local v = target.AssemblyLinearVelocity
+    if typeof(v) == "Vector3" then pos = pos + v * AIM_PREDICT end
 
     local cam = Cam()
-    local smoothing = State.Snap and 1.0 or State.Smoothing
-
-    -- predicted world position
-    local pos = target.Position
-    if State.Predict then
-        local v = target.AssemblyLinearVelocity
-        if typeof(v) == "Vector3" then pos = pos + v * State.PredictMul end
-    end
-
-    if State.AimMethod == "cframe" then
-        local goal = CFrame.new(cam.CFrame.Position, pos)
-        cam.CFrame = cam.CFrame:Lerp(goal, smoothing)
-    else
+    -- try mousemoverel first; fallback to CFrame
+    local mmr = rawget(getfenv(), "mousemoverel") or mousemoverel
+    if mmr then
         local sp, onScreen = cam:WorldToViewportPoint(pos)
-        if not onScreen then return end
-        local center = cam.ViewportSize / 2
-        local dx = (sp.X - center.X) * smoothing
-        local dy = (sp.Y - center.Y) * smoothing
-        local mmr = rawget(getfenv(), "mousemoverel") or mousemoverel
-        if mmr then
-            mmr(dx, dy)
-        else
-            local goal = CFrame.new(cam.CFrame.Position, pos)
-            cam.CFrame = cam.CFrame:Lerp(goal, smoothing)
+        if onScreen then
+            local center = cam.ViewportSize / 2
+            mmr((sp.X - center.X) * AIM_SMOOTH, (sp.Y - center.Y) * AIM_SMOOTH)
         end
-    end
-
-    if tick() - lastDebug > 1 then
-        local v = target.AssemblyLinearVelocity
-        local speed = typeof(v) == "Vector3" and v.Magnitude or 0
-        print(string.format("[NextHub] aim → %s | speed=%.1f | smooth=%.2f",
-              target.Parent and target.Parent.Name or "?", speed, smoothing))
-        lastDebug = tick()
+    else
+        local goal = CFrame.new(cam.CFrame.Position, pos)
+        cam.CFrame = cam.CFrame:Lerp(goal, AIM_SMOOTH)
     end
 end)
 
--- target line (Drawing API)
-local targetLine
-pcall(function()
-    if Drawing then
-        targetLine = Drawing.new("Line")
-        targetLine.Thickness = 1
-        targetLine.Transparency = 1
-    end
-end)
-
-RunService.RenderStepped:Connect(function()
-    if not targetLine then return end
-    pcall(function()
-        if not (State.ShowTargetLine and State.Aimbot) then targetLine.Visible = false; return end
-        local t = getTarget()
-        if not t then targetLine.Visible = false; return end
-        local cam = Cam()
-        local sp, onScreen = cam:WorldToViewportPoint(t.Position)
-        if not onScreen then targetLine.Visible = false; return end
-        targetLine.From = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-        targetLine.To   = Vector2.new(sp.X, sp.Y)
-        targetLine.Color = Color3.fromRGB(0, 255, 0)
-        targetLine.Visible = true
-    end)
-end)
-
+-- ============================================================
 -- No Recoil
+-- ============================================================
 RunService.RenderStepped:Connect(function()
     if not State.NoRecoil then return end
     local cam = Cam()
@@ -383,158 +182,85 @@ RunService.RenderStepped:Connect(function()
 end)
 
 -- ============================================================
--- FOV circle (Drawing API)
+-- ESP (0.1s refresh, cap 20, 1000m)
 -- ============================================================
-local fovCircle = nil
-pcall(function()
-    if Drawing then
-        fovCircle = Drawing.new("Circle")
-        fovCircle.Thickness = 1.5
-        fovCircle.Transparency = 1
-        fovCircle.Filled = false
-    end
-end)
-
-RunService.RenderStepped:Connect(function()
-    if not fovCircle then return end
-    pcall(function()
-        if not State.ShowFOV then fovCircle.Visible = false; return end
-        local cam = Cam()
-        local fovPx = math.tan(math.rad(State.FOV) / 2) * cam.ViewportSize.Y
-        fovCircle.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-        fovCircle.Radius = fovPx
-        fovCircle.Color = State.FOVColor
-        fovCircle.Visible = true
-    end)
-end)
-
--- ============================================================
--- ESP (cached scan — same loop)
--- ============================================================
-local function makeEsp(model)
-    local pack = {}
-    if State.ESP then
-        local h = Instance.new("Highlight")
-        h.FillColor = State.ESPColor
-        h.OutlineColor = Color3.new(1, 1, 1)
-        h.FillTransparency = 0.5
-        h.OutlineTransparency = 0
-        h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        h.Parent = model
-        pack.h = h
-    end
-    if State.NameTag then
-        local hrp = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
-        if hrp then
-            local bb = Instance.new("BillboardGui")
-            bb.Size = UDim2.new(0, 140, 0, 40)
-            bb.StudsOffset = Vector3.new(0, 3, 0)
-            bb.AlwaysOnTop = true
-            bb.Parent = hrp
-            local lbl = Instance.new("TextLabel")
-            lbl.Size = UDim2.new(1, 0, 1, 0)
-            lbl.BackgroundTransparency = 1
-            lbl.TextColor3 = Color3.fromRGB(255, 255, 0)
-            lbl.TextStrokeTransparency = 0
-            lbl.Font = Enum.Font.GothamBold
-            lbl.TextScaled = true
-            lbl.Parent = bb
-            pack.bb, pack.lbl, pack.hrp = bb, lbl, hrp
-        end
-    end
-    espCache[model] = pack
-end
+local espCache = {}
 
 local function clearEsp(model)
-    local pack = espCache[model]
-    if not pack then return end
-    for _, v in pairs(pack) do
-        if typeof(v) == "Instance" and v.Parent then v:Destroy() end
-    end
+    local pack = espCache[model]; if not pack then return end
+    for _, v in pairs(pack) do if typeof(v) == "Instance" and v.Parent then v:Destroy() end end
     espCache[model] = nil
 end
 
-local function ensureHighlight(model, pack)
-    if not pack.h then
-        local h = Instance.new("Highlight")
-        h.FillColor = State.ESPColor
-        h.OutlineColor = Color3.new(1, 1, 1)
-        h.FillTransparency = 0.5
-        h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        h.Parent = model
-        pack.h = h
-    end
-end
-
-local function ensureBillboard(model, pack)
-    if not pack.bb then
-        local hrp = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
-        if not hrp then return end
-        local bb = Instance.new("BillboardGui")
-        bb.Size = UDim2.new(0, 140, 0, 40)
-        bb.StudsOffset = Vector3.new(0, 3, 0)
-        bb.AlwaysOnTop = true
-        bb.Parent = hrp
-        local lbl = Instance.new("TextLabel")
-        lbl.Size = UDim2.new(1, 0, 1, 0)
-        lbl.BackgroundTransparency = 1
-        lbl.TextColor3 = Color3.fromRGB(255, 255, 0)
-        lbl.TextStrokeTransparency = 0
-        lbl.Font = Enum.Font.GothamBold
-        lbl.TextScaled = true
-        lbl.Parent = bb
-        pack.bb, pack.lbl, pack.hrp = bb, lbl, hrp
-    end
-end
-
--- update ESP every 0.1s — pick nearest N within MaxDist
 task.spawn(function()
     while true do
         local wants = State.ESP or State.NameTag
-
         if not wants then
-            for model, _ in pairs(espCache) do clearEsp(model) end
-            task.wait(0.3)
-            continue
+            for m, _ in pairs(espCache) do clearEsp(m) end
+            task.wait(0.3); continue
         end
-
         local myHrp = LP.Character and (LP.Character:FindFirstChild("HumanoidRootPart") or LP.Character:FindFirstChild("Head"))
         if not myHrp then task.wait(0.1); continue end
 
-        -- rank by distance
         local ranked = {}
         for _, e in ipairs(humanoidCache) do
-            local model = e.model
-            if not model.Parent then continue end
-            local hrp = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
-            if not hrp then continue end
-            local d = (hrp.Position - myHrp.Position).Magnitude
-            if d > State.MaxDist then continue end
-            table.insert(ranked, { model = model, hrp = hrp, d = d })
+            local m = e.model
+            local hrp = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Head")
+            if hrp and m.Parent then
+                local d = (hrp.Position - myHrp.Position).Magnitude
+                if d <= ESP_MAX_DIST then
+                    table.insert(ranked, { model = m, hrp = hrp, d = d })
+                end
+            end
         end
         table.sort(ranked, function(a, b) return a.d < b.d end)
 
-        -- keep top N
         local keep = {}
-        for i = 1, math.min(State.MaxESP, #ranked) do
+        for i = 1, math.min(ESP_MAX, #ranked) do
             local r = ranked[i]
-            keep[r.model] = r
+            keep[r.model] = true
             local pack = espCache[r.model] or {}
             espCache[r.model] = pack
-            if State.ESP then ensureHighlight(r.model, pack) end
-            if State.NameTag then ensureBillboard(r.model, pack) end
-            if colorDirty and pack.h then pack.h.FillColor = State.ESPColor end
+
+            if State.ESP and not pack.h then
+                local h = Instance.new("Highlight")
+                h.FillColor = Color3.fromRGB(255, 40, 40)
+                h.OutlineColor = Color3.new(1, 1, 1)
+                h.FillTransparency = 0.5
+                h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                h.Parent = r.model
+                pack.h = h
+            elseif not State.ESP and pack.h then
+                pack.h:Destroy(); pack.h = nil
+            end
+
+            if State.NameTag and not pack.bb then
+                local bb = Instance.new("BillboardGui")
+                bb.Size = UDim2.new(0, 140, 0, 40)
+                bb.StudsOffset = Vector3.new(0, 3, 0)
+                bb.AlwaysOnTop = true
+                bb.Parent = r.hrp
+                local lbl = Instance.new("TextLabel")
+                lbl.Size = UDim2.new(1, 0, 1, 0)
+                lbl.BackgroundTransparency = 1
+                lbl.TextColor3 = Color3.fromRGB(255, 255, 0)
+                lbl.TextStrokeTransparency = 0
+                lbl.Font = Enum.Font.GothamBold
+                lbl.TextScaled = true
+                lbl.Parent = bb
+                pack.bb, pack.lbl, pack.hrp = bb, lbl, r.hrp
+            elseif not State.NameTag and pack.bb then
+                pack.bb:Destroy(); pack.bb = nil; pack.lbl = nil
+            end
+
             if pack.lbl then pack.lbl.Text = (r.model.Name or "?") .. "\n" .. math.floor(r.d) .. "m" end
         end
-        colorDirty = false
 
-        -- remove others
-        for model, _ in pairs(espCache) do
-            if not keep[model] then clearEsp(model) end
+        for m, _ in pairs(espCache) do
+            if not keep[m] then clearEsp(m) end
         end
-
         task.wait(0.1)
     end
 end)
 
-print("[NextHub] v3 loaded — cached scan, FOV circle, right-mouse aim")
+print("[NextHub] v8 loaded  |  R-Shift / Insert / End = toggle UI")
