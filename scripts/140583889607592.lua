@@ -250,7 +250,11 @@ end
 -- Aimbot — two methods: CFrame write + mousemoverel fallback
 -- Set AimMethod to pick
 -- ============================================================
-State.AimMethod = "mousemoverel" -- "cframe" or "mousemoverel"
+State.AimMethod   = "mousemoverel"
+State.Snap        = false
+State.Predict     = true
+State.PredictMul  = 0.12
+State.ShowTargetLine = true
 
 do
     local R = Tabs.Combat:AddRightGroupbox("Method")
@@ -260,6 +264,30 @@ do
         Default = "mousemoverel",
         Callback = function(v) State.AimMethod = v end,
     })
+    R:AddToggle("Snap",    { Text = "Snap (ignore smoothing)", Default = false, Callback = function(v) State.Snap = v end })
+    R:AddToggle("Predict", { Text = "Predict velocity",         Default = true,  Callback = function(v) State.Predict = v end })
+    R:AddSlider("PredictMul", { Text = "Prediction amt", Default = 0.12, Min = 0, Max = 0.5, Rounding = 2,
+        Callback = function(v) State.PredictMul = v end })
+    R:AddToggle("ShowTargetLine", { Text = "Debug: target line", Default = true, Callback = function(v) State.ShowTargetLine = v end })
+    R:AddButton("Dump nearest target to console", function()
+        local myHrp = LP.Character and (LP.Character:FindFirstChild("HumanoidRootPart") or LP.Character:FindFirstChild("Head"))
+        if not myHrp then print("no local char"); return end
+        local best, bestD
+        for _, e in ipairs(humanoidCache) do
+            local hrp = e.model:FindFirstChild("HumanoidRootPart") or e.model:FindFirstChild("Head")
+            if hrp then
+                local d = (hrp.Position - myHrp.Position).Magnitude
+                if not bestD or d < bestD then bestD, best = d, e.model end
+            end
+        end
+        if not best then print("no target"); return end
+        print("=== DUMP " .. best.Name .. " ===")
+        for _, c in ipairs(best:GetChildren()) do
+            local pos = (c:IsA("BasePart") and tostring(c.Position)) or "-"
+            local vel = (c:IsA("BasePart") and tostring(c.AssemblyLinearVelocity)) or "-"
+            print(string.format("  %s  (%s)  pos=%s  vel=%s", c.Name, c.ClassName, pos, vel))
+        end
+    end)
 end
 
 local lastDebug = 0
@@ -283,32 +311,66 @@ RunService.RenderStepped:Connect(function()
     end
 
     local cam = Cam()
+    local smoothing = State.Snap and 1.0 or State.Smoothing
+
+    -- predicted world position
+    local pos = target.Position
+    if State.Predict then
+        local v = target.AssemblyLinearVelocity
+        if typeof(v) == "Vector3" then pos = pos + v * State.PredictMul end
+    end
 
     if State.AimMethod == "cframe" then
-        local goal = CFrame.new(cam.CFrame.Position, target.Position)
-        cam.CFrame = cam.CFrame:Lerp(goal, State.Smoothing)
+        local goal = CFrame.new(cam.CFrame.Position, pos)
+        cam.CFrame = cam.CFrame:Lerp(goal, smoothing)
     else
-        -- mousemoverel: translate target screen pos → mouse delta
-        local sp, onScreen = cam:WorldToViewportPoint(target.Position)
+        local sp, onScreen = cam:WorldToViewportPoint(pos)
         if not onScreen then return end
         local center = cam.ViewportSize / 2
-        local dx = (sp.X - center.X) * State.Smoothing
-        local dy = (sp.Y - center.Y) * State.Smoothing
-        if mousemoverel then
-            mousemoverel(dx, dy)
-        elseif Input and Input.MouseMove then
-            Input.MouseMove(dx, dy)
+        local dx = (sp.X - center.X) * smoothing
+        local dy = (sp.Y - center.Y) * smoothing
+        local mmr = rawget(getfenv(), "mousemoverel") or mousemoverel
+        if mmr then
+            mmr(dx, dy)
         else
-            -- fallback to CFrame if executor doesn't expose mouse API
-            local goal = CFrame.new(cam.CFrame.Position, target.Position)
-            cam.CFrame = cam.CFrame:Lerp(goal, State.Smoothing)
+            local goal = CFrame.new(cam.CFrame.Position, pos)
+            cam.CFrame = cam.CFrame:Lerp(goal, smoothing)
         end
     end
 
     if tick() - lastDebug > 1 then
-        print("[NextHub] aim → " .. (target.Parent and target.Parent.Name or "?"))
+        local v = target.AssemblyLinearVelocity
+        local speed = typeof(v) == "Vector3" and v.Magnitude or 0
+        print(string.format("[NextHub] aim → %s | speed=%.1f | smooth=%.2f",
+              target.Parent and target.Parent.Name or "?", speed, smoothing))
         lastDebug = tick()
     end
+end)
+
+-- target line (Drawing API)
+local targetLine
+pcall(function()
+    if Drawing then
+        targetLine = Drawing.new("Line")
+        targetLine.Thickness = 1
+        targetLine.Transparency = 1
+    end
+end)
+
+RunService.RenderStepped:Connect(function()
+    if not targetLine then return end
+    pcall(function()
+        if not (State.ShowTargetLine and State.Aimbot) then targetLine.Visible = false; return end
+        local t = getTarget()
+        if not t then targetLine.Visible = false; return end
+        local cam = Cam()
+        local sp, onScreen = cam:WorldToViewportPoint(t.Position)
+        if not onScreen then targetLine.Visible = false; return end
+        targetLine.From = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+        targetLine.To   = Vector2.new(sp.X, sp.Y)
+        targetLine.Color = Color3.fromRGB(0, 255, 0)
+        targetLine.Visible = true
+    end)
 end)
 
 -- No Recoil
@@ -324,25 +386,26 @@ end)
 -- FOV circle (Drawing API)
 -- ============================================================
 local fovCircle = nil
-if Drawing then
-    local ok, circle = pcall(function() return Drawing.new("Circle") end)
-    if ok and circle then
-        fovCircle = circle
+pcall(function()
+    if Drawing then
+        fovCircle = Drawing.new("Circle")
         fovCircle.Thickness = 1.5
         fovCircle.Transparency = 1
         fovCircle.Filled = false
     end
-end
+end)
 
 RunService.RenderStepped:Connect(function()
     if not fovCircle then return end
-    if not State.ShowFOV then fovCircle.Visible = false; return end
-    local cam = Cam()
-    local fovPx = math.tan(math.rad(State.FOV) / 2) * cam.ViewportSize.Y
-    fovCircle.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-    fovCircle.Radius = fovPx
-    fovCircle.Color = State.FOVColor
-    fovCircle.Visible = true
+    pcall(function()
+        if not State.ShowFOV then fovCircle.Visible = false; return end
+        local cam = Cam()
+        local fovPx = math.tan(math.rad(State.FOV) / 2) * cam.ViewportSize.Y
+        fovCircle.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+        fovCircle.Radius = fovPx
+        fovCircle.Color = State.FOVColor
+        fovCircle.Visible = true
+    end)
 end)
 
 -- ============================================================
