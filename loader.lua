@@ -15,9 +15,10 @@ local BASE = "https://raw.githubusercontent.com/lovepump008-bot/SRCORE/main/"
 
 -- PlaceId -> { file, version }
 local PLACES = {
-    [140583889607592] = { file = "scripts/140583889607592.lua", version = "8.0" },
-    [86075649546448]  = { file = "scripts/140583889607592.lua", version = "8.0" },  -- PORBOX PVP (lobby)
-    [124382071157432] = { file = "scripts/140583889607592.lua", version = "8.0" },  -- PORBOX PVP (match)
+    [140583889607592] = { file = "scripts/140583889607592.lua", version = "8.1" },
+    [86075649546448]  = { file = "scripts/140583889607592.lua", version = "8.1" },  -- PORBOX PVP (lobby)
+    [124382071157432] = { file = "scripts/140583889607592.lua", version = "8.1" },  -- PORBOX PVP (match)
+    [81752092344044]  = { file = "scripts/140583889607592.lua", version = "8.1" },  -- PORBOX PVP (sub)
 }
 
 local function fetch(url)
@@ -47,7 +48,7 @@ local entry = PLACES[pid]
 if not entry then
     -- fallback: unknown place → run main PORBOX script anyway (dev mode)
     warn("[NextHub] Unknown PlaceId " .. pid .. " — using fallback script")
-    entry = { file = "scripts/140583889607592.lua", version = "6.0" }
+    entry = { file = "scripts/140583889607592.lua", version = "8.1" }
 end
 
 local url = BASE .. entry.file .. "?v=" .. entry.version .. "&t=" .. tostring(os.time())
