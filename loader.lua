@@ -5,11 +5,11 @@
         loadstring(game:HttpGet("https://raw.githubusercontent.com/lovepump008-bot/SRCORE/main/loader.lua"))()
 ]]
 
+-- guard set AFTER successful run (see end of file)
 if _G.NEXTHUB_LOADED then
     warn("[NextHub] Already loaded")
     return
 end
-_G.NEXTHUB_LOADED = true
 
 local BASE = "https://raw.githubusercontent.com/lovepump008-bot/SRCORE/main/"
 
@@ -71,5 +71,6 @@ if not ok then
     return
 end
 
+_G.NEXTHUB_LOADED = true
 notify("NEXT HUB", "Loaded v" .. entry.version .. "  |  R-Shift toggle", 4)
 print("[NextHub] Loaded " .. entry.file .. " v" .. entry.version)
