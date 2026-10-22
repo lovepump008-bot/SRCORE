@@ -156,11 +156,27 @@ end
 local AIM_BIND_NAME = "SRCORE_AIM"
 local MMR = rawget(getfenv(), "mousemoverel") or mousemoverel
 
+local function keyDown()
+    return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+        or UIS:IsKeyDown(Enum.KeyCode.E)
+end
+
+local lastAimDbg = 0
+local function dbg(msg)
+    if tick() - lastAimDbg > 1 then
+        print("[aim] " .. msg)
+        lastAimDbg = tick()
+    end
+end
+
+pcall(function() RunService:UnbindFromRenderStep(AIM_BIND_NAME) end)
+
 RunService:BindToRenderStep(AIM_BIND_NAME, Enum.RenderPriority.Camera.Value + 10, function()
     if not State.Aimbot then return end
-    if not UIS:IsMouseButtonPressed(AIM_KEY_MOUSE) then return end
+    if not keyDown() then return end
+
     local target = getTarget()
-    if not target then return end
+    if not target then dbg("no target in FOV"); return end
 
     local pos = target.Position
     local v = target.AssemblyLinearVelocity
@@ -168,7 +184,8 @@ RunService:BindToRenderStep(AIM_BIND_NAME, Enum.RenderPriority.Camera.Value + 10
 
     local cam = Cam()
 
-    -- method 1: mousemoverel (OS-level — survives game camera scripts)
+    -- method 1: mousemoverel (OS-level — moves OS mouse, game sees fresh input)
+    local didMMR = false
     if MMR then
         local sp, onScreen = cam:WorldToViewportPoint(pos)
         if onScreen then
@@ -176,14 +193,23 @@ RunService:BindToRenderStep(AIM_BIND_NAME, Enum.RenderPriority.Camera.Value + 10
             local dx = (sp.X - center.X) * AIM_SMOOTH
             local dy = (sp.Y - center.Y) * AIM_SMOOTH
             if math.abs(dx) > 0.1 or math.abs(dy) > 0.1 then
-                pcall(MMR, dx, dy)
+                local ok = pcall(MMR, dx, dy)
+                didMMR = ok
+            else
+                didMMR = true  -- already centered
             end
         end
     end
 
-    -- method 2: ALSO write CFrame (works for games that use Camera.CFrame directly)
+    -- method 2: ALSO write CFrame
+    local cfBefore = cam.CFrame
     local goal = CFrame.new(cam.CFrame.Position, pos)
-    pcall(function() cam.CFrame = cam.CFrame:Lerp(goal, AIM_SMOOTH) end)
+    local okCF = pcall(function() cam.CFrame = cam.CFrame:Lerp(goal, AIM_SMOOTH) end)
+    local cfChanged = (cam.CFrame.LookVector - cfBefore.LookVector).Magnitude > 0.0001
+
+    dbg(string.format("target=%s | mmr=%s | cfSet=%s | cfChanged=%s",
+        target.Parent and target.Parent.Name or "?",
+        tostring(didMMR), tostring(okCF), tostring(cfChanged)))
 end)
 
 -- ============================================================
