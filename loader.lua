@@ -15,9 +15,8 @@ local BASE = "https://raw.githubusercontent.com/lovepump008-bot/SRCORE/main/"
 
 -- PlaceId -> { file, version }
 local PLACES = {
-    [140583889607592] = { file = "scripts/140583889607592.lua", version = "1.0" },
-    -- เพิ่มแมพอื่นได้ที่นี่:
-    -- [1234567890]    = { file = "scripts/1234567890.lua",    version = "1.0" },
+    [140583889607592] = { file = "scripts/140583889607592.lua", version = "1.1" },
+    [86075649546448]  = { file = "scripts/140583889607592.lua", version = "1.1" },  -- PORBOX PVP
 }
 
 local function fetch(url)
