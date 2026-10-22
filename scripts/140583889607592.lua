@@ -32,9 +32,13 @@ local State = {
     ESP         = false,
     NameTag     = false,
     ESPColor    = Color3.fromRGB(255, 50, 50),
+    MaxESP      = 15,
+    MaxDist     = 500,
 
     NoRecoil    = false,
 }
+
+local colorDirty = true
 
 local toggleState = false
 local espCache    = {}
@@ -103,8 +107,12 @@ do
     L:AddToggle("NameTag", { Text = "Name + Distance", Default = false, Callback = function(v) State.NameTag = v end })
     L:AddLabel("ESP Color"):AddColorPicker("ESPColor", {
         Default = Color3.fromRGB(255, 50, 50),
-        Callback = function(c) State.ESPColor = c end,
+        Callback = function(c) State.ESPColor = c; colorDirty = true end,
     })
+    L:AddSlider("MaxESP", { Text = "Max ESP count", Default = 15, Min = 1, Max = 50, Rounding = 0,
+        Callback = function(v) State.MaxESP = v end })
+    L:AddSlider("MaxDist", { Text = "Max distance (m)", Default = 500, Min = 50, Max = 3000, Rounding = 0,
+        Callback = function(v) State.MaxDist = v end })
 
     local R = Tabs.Visuals:AddRightGroupbox("FOV")
     R:AddToggle("ShowFOV", { Text = "Show FOV circle", Default = true, Callback = function(v)
@@ -346,71 +354,86 @@ local function clearEsp(model)
     espCache[model] = nil
 end
 
--- update ESP + label distance every frame (fast), but add/remove only on cache refresh (0.25s)
+local function ensureHighlight(model, pack)
+    if not pack.h then
+        local h = Instance.new("Highlight")
+        h.FillColor = State.ESPColor
+        h.OutlineColor = Color3.new(1, 1, 1)
+        h.FillTransparency = 0.5
+        h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        h.Parent = model
+        pack.h = h
+    end
+end
+
+local function ensureBillboard(model, pack)
+    if not pack.bb then
+        local hrp = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
+        if not hrp then return end
+        local bb = Instance.new("BillboardGui")
+        bb.Size = UDim2.new(0, 140, 0, 40)
+        bb.StudsOffset = Vector3.new(0, 3, 0)
+        bb.AlwaysOnTop = true
+        bb.Parent = hrp
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, 0, 1, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.TextColor3 = Color3.fromRGB(255, 255, 0)
+        lbl.TextStrokeTransparency = 0
+        lbl.Font = Enum.Font.GothamBold
+        lbl.TextScaled = true
+        lbl.Parent = bb
+        pack.bb, pack.lbl, pack.hrp = bb, lbl, hrp
+    end
+end
+
+-- update ESP every 0.1s — pick nearest N within MaxDist
 task.spawn(function()
     while true do
         local wants = State.ESP or State.NameTag
-        local seen  = {}
+
+        if not wants then
+            for model, _ in pairs(espCache) do clearEsp(model) end
+            task.wait(0.3)
+            continue
+        end
+
+        local myHrp = LP.Character and (LP.Character:FindFirstChild("HumanoidRootPart") or LP.Character:FindFirstChild("Head"))
+        if not myHrp then task.wait(0.1); continue end
+
+        -- rank by distance
+        local ranked = {}
         for _, e in ipairs(humanoidCache) do
             local model = e.model
-            seen[model] = true
-            if wants and not espCache[model] then
-                makeEsp(model)
-            elseif not wants and espCache[model] then
-                clearEsp(model)
-            end
-            local pack = espCache[model]
-            if pack then
-                if State.ESP and not pack.h then
-                    local h = Instance.new("Highlight")
-                    h.FillColor = State.ESPColor
-                    h.OutlineColor = Color3.new(1, 1, 1)
-                    h.FillTransparency = 0.5
-                    h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                    h.Parent = model
-                    pack.h = h
-                elseif not State.ESP and pack.h then
-                    pack.h:Destroy(); pack.h = nil
-                end
-                if State.NameTag and not pack.bb then
-                    local hrp = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
-                    if hrp then
-                        local bb = Instance.new("BillboardGui")
-                        bb.Size = UDim2.new(0, 140, 0, 40)
-                        bb.StudsOffset = Vector3.new(0, 3, 0)
-                        bb.AlwaysOnTop = true
-                        bb.Parent = hrp
-                        local lbl = Instance.new("TextLabel")
-                        lbl.Size = UDim2.new(1, 0, 1, 0)
-                        lbl.BackgroundTransparency = 1
-                        lbl.TextColor3 = Color3.fromRGB(255, 255, 0)
-                        lbl.TextStrokeTransparency = 0
-                        lbl.Font = Enum.Font.GothamBold
-                        lbl.TextScaled = true
-                        lbl.Parent = bb
-                        pack.bb, pack.lbl, pack.hrp = bb, lbl, hrp
-                    end
-                elseif not State.NameTag and pack.bb then
-                    pack.bb:Destroy(); pack.bb = nil; pack.lbl = nil; pack.hrp = nil
-                end
-            end
+            if not model.Parent then continue end
+            local hrp = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
+            if not hrp then continue end
+            local d = (hrp.Position - myHrp.Position).Magnitude
+            if d > State.MaxDist then continue end
+            table.insert(ranked, { model = model, hrp = hrp, d = d })
         end
-        for model, _ in pairs(espCache) do
-            if not seen[model] then clearEsp(model) end
-        end
-        task.wait(0.25)
-    end
-end)
+        table.sort(ranked, function(a, b) return a.d < b.d end)
 
--- Update highlight color + distance label frequently (cheap)
-RunService.Heartbeat:Connect(function()
-    local myHrp = LP.Character and (LP.Character:FindFirstChild("HumanoidRootPart") or LP.Character:FindFirstChild("Head"))
-    for model, pack in pairs(espCache) do
-        if pack.h and State.ESP then pack.h.FillColor = State.ESPColor end
-        if pack.lbl and pack.hrp and pack.hrp.Parent and myHrp then
-            local d = (pack.hrp.Position - myHrp.Position).Magnitude
-            pack.lbl.Text = (model.Name or "?") .. "\n" .. math.floor(d) .. "m"
+        -- keep top N
+        local keep = {}
+        for i = 1, math.min(State.MaxESP, #ranked) do
+            local r = ranked[i]
+            keep[r.model] = r
+            local pack = espCache[r.model] or {}
+            espCache[r.model] = pack
+            if State.ESP then ensureHighlight(r.model, pack) end
+            if State.NameTag then ensureBillboard(r.model, pack) end
+            if colorDirty and pack.h then pack.h.FillColor = State.ESPColor end
+            if pack.lbl then pack.lbl.Text = (r.model.Name or "?") .. "\n" .. math.floor(r.d) .. "m" end
         end
+        colorDirty = false
+
+        -- remove others
+        for model, _ in pairs(espCache) do
+            if not keep[model] then clearEsp(model) end
+        end
+
+        task.wait(0.1)
     end
 end)
 
