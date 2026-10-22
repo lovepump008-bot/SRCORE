@@ -247,8 +247,21 @@ local function getTarget()
 end
 
 -- ============================================================
--- Aimbot
+-- Aimbot — two methods: CFrame write + mousemoverel fallback
+-- Set AimMethod to pick
 -- ============================================================
+State.AimMethod = "mousemoverel" -- "cframe" or "mousemoverel"
+
+do
+    local R = Tabs.Combat:AddRightGroupbox("Method")
+    R:AddDropdown("AimMethod", {
+        Text = "Aim method",
+        Values = { "mousemoverel", "cframe" },
+        Default = "mousemoverel",
+        Callback = function(v) State.AimMethod = v end,
+    })
+end
+
 local lastDebug = 0
 RunService.RenderStepped:Connect(function()
     if not State.Aimbot then return end
@@ -270,8 +283,32 @@ RunService.RenderStepped:Connect(function()
     end
 
     local cam = Cam()
-    local goal = CFrame.new(cam.CFrame.Position, target.Position)
-    cam.CFrame = cam.CFrame:Lerp(goal, State.Smoothing)
+
+    if State.AimMethod == "cframe" then
+        local goal = CFrame.new(cam.CFrame.Position, target.Position)
+        cam.CFrame = cam.CFrame:Lerp(goal, State.Smoothing)
+    else
+        -- mousemoverel: translate target screen pos → mouse delta
+        local sp, onScreen = cam:WorldToViewportPoint(target.Position)
+        if not onScreen then return end
+        local center = cam.ViewportSize / 2
+        local dx = (sp.X - center.X) * State.Smoothing
+        local dy = (sp.Y - center.Y) * State.Smoothing
+        if mousemoverel then
+            mousemoverel(dx, dy)
+        elseif Input and Input.MouseMove then
+            Input.MouseMove(dx, dy)
+        else
+            -- fallback to CFrame if executor doesn't expose mouse API
+            local goal = CFrame.new(cam.CFrame.Position, target.Position)
+            cam.CFrame = cam.CFrame:Lerp(goal, State.Smoothing)
+        end
+    end
+
+    if tick() - lastDebug > 1 then
+        print("[NextHub] aim → " .. (target.Parent and target.Parent.Name or "?"))
+        lastDebug = tick()
+    end
 end)
 
 -- No Recoil
