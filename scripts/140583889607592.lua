@@ -71,7 +71,9 @@ do
     L:AddButton("Dump target (debug)", function()
         if not silentTarget or not silentTarget.model then print("no target"); return end
         local m = silentTarget.model
-        print("=== " .. m.Name .. " parts ===")
+        local head, src = findRealHead(m)
+        print("=== " .. m.Name .. " ===")
+        print("  real head: " .. (head and head.Name or "?") .. "  via " .. src .. "  Y=" .. (head and tostring(head.Position.Y) or "?"))
         for _, c in ipairs(m:GetChildren()) do
             if c:IsA("BasePart") then
                 print(string.format("  %-25s  Y=%.2f", c.Name, c.Position.Y))
@@ -147,27 +149,58 @@ end)
 local HEAD_OFFSET_R15 = Vector3.new(0, 1.5, 0)
 local HEAD_OFFSET_R6  = Vector3.new(0, 1.0, 0)
 
--- find part with HIGHEST Y position in model (robust head finder for any rig)
-local function topPart(model)
+-- Find the REAL head of a rig
+-- Priority:
+--   1. Motor6D "Neck"/"NeckJoint" → .Part1 is the actual Head bone
+--   2. Humanoid rig: HumanoidRootPart + rig-specific offset
+--   3. FindFirstChild("Head")
+--   4. topmost BasePart (last resort)
+local function findRealHead(model)
+    -- 1. Motor6D neck joint
+    for _, m in ipairs(model:GetDescendants()) do
+        if m:IsA("Motor6D") then
+            local n = m.Name
+            if n == "Neck" or n == "NeckJoint" or n == "neck" then
+                if m.Part1 and m.Part1:IsA("BasePart") then return m.Part1, "neck-motor" end
+            end
+        end
+    end
+    -- 2. explicit Head child
+    local h = model:FindFirstChild("Head")
+    if h and h:IsA("BasePart") then return h, "named-head" end
+    -- 3. Humanoid-based offset
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    local hrp = model:FindFirstChild("HumanoidRootPart")
+    if hum and hrp and hrp:IsA("BasePart") then
+        return hrp, "hrp-offset"
+    end
+    -- 4. topmost
     local best, bestY
     for _, c in ipairs(model:GetDescendants()) do
         if c:IsA("BasePart") then
-            local y = c.Position.Y
-            if not bestY or y > bestY then bestY, best = y, c end
+            if not bestY or c.Position.Y > bestY then bestY, best = c.Position.Y, c end
         end
     end
-    return best
+    return best, "topmost"
 end
 
--- Returns {part=BasePart, pos=Vector3}
+-- Returns part + aim position
 local function getPartAndPos(model)
     local wanted = State.AimPart
     local boost = Vector3.new(0, State.HeadYBoost or 0, 0)
 
     if wanted == "Head" then
-        -- always use HIGHEST BasePart = real head position (works any rig/custom)
-        local p = topPart(model)
-        if p then return p, p.Position + boost end
+        local head, src = findRealHead(model)
+        if head then
+            local pos = head.Position
+            -- if we only have HRP, add rig offset so pos is at head height
+            if src == "hrp-offset" then
+                local hum = model:FindFirstChildOfClass("Humanoid")
+                local off = (hum and hum.RigType == Enum.HumanoidRigType.R6) and HEAD_OFFSET_R6 or HEAD_OFFSET_R15
+                pos = pos + off
+            end
+            return head, pos + boost
+        end
     end
 
     local p = model:FindFirstChild(wanted)
