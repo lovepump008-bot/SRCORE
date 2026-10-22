@@ -147,31 +147,33 @@ end)
 local HEAD_OFFSET_R15 = Vector3.new(0, 1.5, 0)
 local HEAD_OFFSET_R6  = Vector3.new(0, 1.0, 0)
 
--- Returns {part=BasePart, pos=Vector3} — pos is adjusted so Head mode truly hits head
+-- find part with HIGHEST Y position in model (robust head finder for any rig)
+local function topPart(model)
+    local best, bestY
+    for _, c in ipairs(model:GetDescendants()) do
+        if c:IsA("BasePart") then
+            local y = c.Position.Y
+            if not bestY or y > bestY then bestY, best = y, c end
+        end
+    end
+    return best
+end
+
+-- Returns {part=BasePart, pos=Vector3}
 local function getPartAndPos(model)
     local wanted = State.AimPart
     local boost = Vector3.new(0, State.HeadYBoost or 0, 0)
 
-    local p = model:FindFirstChild(wanted)
-    if p and p:IsA("BasePart") then
-        -- Head found: still add user boost (negative to lower, positive to raise)
-        if wanted == "Head" then
-            return p, p.Position + boost
-        end
-        return p, p.Position
-    end
-
-    -- aim at Head requested, no "Head" child → compute from HRP + offset + boost
     if wanted == "Head" then
-        local hrp = model:FindFirstChild("HumanoidRootPart")
-        if hrp and hrp:IsA("BasePart") then
-            local rig = model:FindFirstChildOfClass("Humanoid")
-            local off = (rig and rig.RigType == Enum.HumanoidRigType.R6) and HEAD_OFFSET_R6 or HEAD_OFFSET_R15
-            return hrp, hrp.Position + off + boost
-        end
+        -- always use HIGHEST BasePart = real head position (works any rig/custom)
+        local p = topPart(model)
+        if p then return p, p.Position + boost end
     end
 
-    for _, n in ipairs({ "Head", "HumanoidRootPart", "UpperTorso", "Torso", "LowerTorso" }) do
+    local p = model:FindFirstChild(wanted)
+    if p and p:IsA("BasePart") then return p, p.Position end
+
+    for _, n in ipairs({ "HumanoidRootPart", "UpperTorso", "Torso", "LowerTorso" }) do
         local q = model:FindFirstChild(n)
         if q and q:IsA("BasePart") then return q, q.Position end
     end
