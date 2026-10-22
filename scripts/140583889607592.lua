@@ -28,6 +28,9 @@ local AIM_PREDICT   = 0.14
 local ESP_MAX       = 20
 local ESP_MAX_DIST  = 1500
 
+-- forward decl (dropdown callback references this before definition)
+local installSilent = function() end
+
 -- ============================================================
 -- Window
 -- ============================================================
@@ -45,7 +48,10 @@ do
         Text = "Mode",
         Values = { "Mouse Delta", "Silent", "Snap", "Smooth" },
         Default = "Mouse Delta",
-        Callback = function(v) State.Mode = v end,
+        Callback = function(v)
+            State.Mode = v
+            if v == "Silent" then installSilent() end
+        end,
     })
     L:AddDropdown("AimPart", {
         Text = "Aim at",
@@ -253,92 +259,63 @@ RunService:BindToRenderStep(AIM_BIND, Enum.RenderPriority.Camera.Value + 10, fun
 end)
 
 -- ============================================================
--- Mode 3: SILENT — redirect bullets without camera move
+-- Mode 3: SILENT — install lazily when Mode is set to "Silent"
 -- ============================================================
-local function silentPos()
-    if not (State.Aimbot and State.Mode == "Silent" and silentTarget and silentTarget.model and silentTarget.model.Parent) then
-        return nil
+local silentInstalled = false
+
+installSilent = function()
+    if silentInstalled then return end
+    silentInstalled = true
+
+    local function silentPos()
+        if not (State.Aimbot and State.Mode == "Silent" and silentTarget and silentTarget.model and silentTarget.model.Parent) then
+            return nil
+        end
+        local pos = getAimPos()
+        return pos
     end
-    local pos, _ = getAimPos()
-    return pos
+
+    if hookmetamethod then
+        local oldNC
+        oldNC = hookmetamethod(game, "__namecall", function(self, ...)
+            local pos = silentPos()
+            if pos then
+                local method = getnamecallmethod and getnamecallmethod() or ""
+                if method == "FireServer" or method == "InvokeServer" then
+                    local args = { ... }
+                    local changed = false
+                    for i, a in ipairs(args) do
+                        if typeof(a) == "Vector3" then args[i] = pos; changed = true
+                        elseif typeof(a) == "CFrame" then args[i] = CFrame.new(pos); changed = true
+                        end
+                    end
+                    if changed then return oldNC(self, unpack(args)) end
+                end
+            end
+            return oldNC(self, ...)
+        end)
+
+        local oldIndex
+        oldIndex = hookmetamethod(game, "__index", function(self, k)
+            local pos = silentPos()
+            if pos and typeof(self) == "Instance" and self:IsA("PlayerMouse") then
+                if k == "Hit"     then return CFrame.new(pos) end
+                if k == "Target"  then return silentTarget.part end
+                if k == "UnitRay" then
+                    local cam = Cam()
+                    return Ray.new(cam.CFrame.Position, (pos - cam.CFrame.Position).Unit)
+                end
+            end
+            return oldIndex(self, k)
+        end)
+        print("[NextHub] silent hooks installed")
+    else
+        warn("[NextHub] hookmetamethod missing — Silent mode unavailable")
+    end
 end
 
--- Try hookmetamethod first (Solara API) — simpler than manual meta edit
-if hookmetamethod then
-    local oldNC
-    oldNC = hookmetamethod(game, "__namecall", function(self, ...)
-        local pos = silentPos()
-        if pos then
-            local method = getnamecallmethod and getnamecallmethod() or ""
-            if method == "FireServer" or method == "InvokeServer" then
-                local args = { ... }
-                local changed = false
-                for i, a in ipairs(args) do
-                    if typeof(a) == "Vector3" then args[i] = pos; changed = true
-                    elseif typeof(a) == "CFrame" then args[i] = CFrame.new(pos); changed = true
-                    end
-                end
-                if changed then return oldNC(self, unpack(args)) end
-            end
-        end
-        return oldNC(self, ...)
-    end)
-
-    -- Hook mouse via __index
-    local oldIndex
-    oldIndex = hookmetamethod(game, "__index", function(self, k)
-        local pos = silentPos()
-        if pos and typeof(self) == "Instance" and self:IsA("PlayerMouse") then
-            if k == "Hit"     then return CFrame.new(pos) end
-            if k == "Target"  then return silentTarget.part end
-            if k == "UnitRay" then
-                local cam = Cam()
-                return Ray.new(cam.CFrame.Position, (pos - cam.CFrame.Position).Unit)
-            end
-        end
-        return oldIndex(self, k)
-    end)
-    print("[NextHub] silent hooks installed (hookmetamethod)")
-elseif getrawmetatable and (setreadonly or make_writeable) and newcclosure then
-    local meta = getrawmetatable(game)
-    local setro = setreadonly or make_writeable
-    local oldNC = meta.__namecall
-    local oldIndex = meta.__index
-    setro(meta, false)
-    meta.__namecall = newcclosure(function(self, ...)
-        local pos = silentPos()
-        if pos then
-            local method = getnamecallmethod and getnamecallmethod() or ""
-            if method == "FireServer" or method == "InvokeServer" then
-                local args = { ... }
-                local changed = false
-                for i, a in ipairs(args) do
-                    if typeof(a) == "Vector3" then args[i] = pos; changed = true
-                    elseif typeof(a) == "CFrame" then args[i] = CFrame.new(pos); changed = true
-                    end
-                end
-                if changed then return oldNC(self, unpack(args)) end
-            end
-        end
-        return oldNC(self, ...)
-    end)
-    meta.__index = newcclosure(function(self, k)
-        local pos = silentPos()
-        if pos and typeof(self) == "Instance" and self:IsA("PlayerMouse") then
-            if k == "Hit"     then return CFrame.new(pos) end
-            if k == "Target"  then return silentTarget.part end
-            if k == "UnitRay" then
-                local cam = Cam()
-                return Ray.new(cam.CFrame.Position, (pos - cam.CFrame.Position).Unit)
-            end
-        end
-        return oldIndex(self, k)
-    end)
-    setro(meta, true)
-    print("[NextHub] silent hooks installed (raw meta)")
-else
-    warn("[NextHub] Silent mode unavailable (executor missing hookmetamethod + hookfunction)")
-end
+-- install only on first time user picks Silent
+-- (hook sits dormant otherwise)
 
 -- ============================================================
 -- No Recoil
