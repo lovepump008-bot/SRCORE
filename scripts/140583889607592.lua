@@ -21,19 +21,12 @@ local State = {
     NoRecoil  = false,
 }
 
--- fixed sensible defaults (no sliders)
-local AIM_FOV_PX    = 500        -- pixel radius from crosshair (no tan math — direct)
-local AIM_SMOOTH    = 0.65       -- stronger
-local AIM_PREDICT   = 0.12
+-- defaults
+local AIM_FOV_PX    = 1200       -- almost whole screen
+local AIM_SMOOTH    = 1.0        -- snap lock
+local AIM_PREDICT   = 0.14
 local ESP_MAX       = 20
-local ESP_MAX_DIST  = 1000
-local AIM_KEY_MOUSE = Enum.UserInputType.MouseButton2
-
--- diagnostic once
-do
-    local mmr = rawget(getfenv(), "mousemoverel") or mousemoverel
-    print("[NextHub] mousemoverel " .. (mmr and "AVAILABLE" or "MISSING"))
-end
+local ESP_MAX_DIST  = 1500
 
 -- ============================================================
 -- Window
@@ -151,72 +144,58 @@ local function getTarget()
     return bestPart
 end
 
--- Aim: 3-method attempt
+-- Aim: pure CFrame snap (no mmr jitter)
 local AIM_BIND_NAME = "SRCORE_AIM"
-local MMR  = rawget(getfenv(), "mousemoverel") or mousemoverel
-local VIM  = pcall(function() return game:GetService("VirtualInputManager") end) and game:GetService("VirtualInputManager") or nil
-
-print("[NextHub] mmr=" .. tostring(MMR ~= nil) .. "  vim=" .. tostring(VIM ~= nil))
 
 local function keyDown()
     return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
         or UIS:IsKeyDown(Enum.KeyCode.E)
 end
 
-local lastAimDbg = 0
-local function dbg(msg)
-    if tick() - lastAimDbg > 1 then
-        print("[aim] " .. msg)
-        lastAimDbg = tick()
-    end
-end
+-- lock onto one target per hold (reduces jumping between targets)
+local lockedTarget = nil
+local wasDown = false
 
 pcall(function() RunService:UnbindFromRenderStep(AIM_BIND_NAME) end)
 
 RunService:BindToRenderStep(AIM_BIND_NAME, Enum.RenderPriority.Camera.Value + 10, function()
-    if not State.Aimbot then return end
-    if not keyDown() then return end
+    if not State.Aimbot then
+        lockedTarget = nil; wasDown = false; return
+    end
+    local down = keyDown()
 
-    local cacheSize = #humanoidCache
-    local target = getTarget()
-    if not target then
-        dbg("no target | humanoidCache=" .. cacheSize)
+    if not down then
+        lockedTarget = nil
+        wasDown = false
         return
     end
+
+    -- on key press: pick target ONCE, hold until released or target dies
+    if not wasDown then
+        wasDown = true
+        lockedTarget = getTarget()
+    else
+        -- re-pick if locked target no longer valid
+        if not lockedTarget or not lockedTarget.Parent then
+            lockedTarget = getTarget()
+        else
+            local hum = lockedTarget.Parent:FindFirstChildOfClass("Humanoid")
+            if not hum or hum.Health <= 0 then
+                lockedTarget = getTarget()
+            end
+        end
+    end
+
+    local target = lockedTarget
+    if not target then return end
 
     local pos = target.Position
     local v = target.AssemblyLinearVelocity
     if typeof(v) == "Vector3" then pos = pos + v * AIM_PREDICT end
 
     local cam = Cam()
-    local sp, onScreen = cam:WorldToViewportPoint(pos)
-    if not onScreen then dbg("target not on screen"); return end
-
-    local center = cam.ViewportSize / 2
-    local dx = (sp.X - center.X) * AIM_SMOOTH
-    local dy = (sp.Y - center.Y) * AIM_SMOOTH
-
-    -- method 1: mousemoverel
-    local m1 = false
-    if MMR then m1 = pcall(MMR, dx, dy) end
-
-    -- method 2: VirtualInputManager
-    local m2 = false
-    if VIM then
-        m2 = pcall(function()
-            VIM:SendMouseMoveEvent(sp.X, sp.Y, nil)
-        end)
-    end
-
-    -- method 3: direct CFrame
-    local cfBefore = cam.CFrame
     local goal = CFrame.new(cam.CFrame.Position, pos)
-    local m3 = pcall(function() cam.CFrame = cam.CFrame:Lerp(goal, AIM_SMOOTH) end)
-    local cfChanged = (cam.CFrame.LookVector - cfBefore.LookVector).Magnitude > 0.0001
-
-    dbg(string.format("tgt=%s | dx=%.0f dy=%.0f | mmr=%s vim=%s cf=%s(moved=%s)",
-        target.Parent and target.Parent.Name or "?",
-        dx, dy, tostring(m1), tostring(m2), tostring(m3), tostring(cfChanged)))
+    pcall(function() cam.CFrame = goal end)  -- SNAP — no lerp jitter
 end)
 
 -- ============================================================
