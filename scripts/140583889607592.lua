@@ -15,9 +15,9 @@ local function Cam() return workspace.CurrentCamera end
 
 local State = {
     Aimbot    = false,
-    Mode      = "Snap",        -- Snap / Smooth / Silent / Mouse Delta
+    Mode      = "Mouse Delta",
     AimPart   = "Head",
-    SmoothLerp= 0.35,
+    SmoothLerp= 0.5,
     ESP       = false,
     NameTag   = false,
     NoRecoil  = false,
@@ -43,8 +43,8 @@ do
         Callback = function(v) State.Aimbot = v end })
     L:AddDropdown("Mode", {
         Text = "Mode",
-        Values = { "Snap", "Smooth", "Silent", "Mouse Delta" },
-        Default = "Snap",
+        Values = { "Mouse Delta", "Silent", "Snap", "Smooth" },
+        Default = "Mouse Delta",
         Callback = function(v) State.Mode = v end,
     })
     L:AddDropdown("AimPart", {
@@ -122,14 +122,34 @@ end)
 -- ============================================================
 -- Target picker
 -- ============================================================
-local function getPart(model)
-    local p = model:FindFirstChild(State.AimPart)
-    if p and p:IsA("BasePart") then return p end
-    for _, n in ipairs({ "Head", "HumanoidRootPart", "UpperTorso", "Torso" }) do
-        local q = model:FindFirstChild(n)
-        if q and q:IsA("BasePart") then return q end
+-- Head offsets per rig type (from HumanoidRootPart)
+local HEAD_OFFSET_R15 = Vector3.new(0, 1.5, 0)
+local HEAD_OFFSET_R6  = Vector3.new(0, 1.0, 0)
+
+-- Returns {part=BasePart, pos=Vector3} — pos is adjusted so Head mode truly hits head
+local function getPartAndPos(model)
+    local wanted = State.AimPart
+    local p = model:FindFirstChild(wanted)
+    if p and p:IsA("BasePart") then
+        return p, p.Position
     end
-    return nil
+
+    -- aim at Head requested, but no "Head" child → compute from HRP + offset
+    if wanted == "Head" then
+        local hrp = model:FindFirstChild("HumanoidRootPart")
+        if hrp and hrp:IsA("BasePart") then
+            local rig = model:FindFirstChildOfClass("Humanoid")
+            local off = (rig and rig.RigType == Enum.HumanoidRigType.R6) and HEAD_OFFSET_R6 or HEAD_OFFSET_R15
+            return hrp, hrp.Position + off
+        end
+    end
+
+    -- fallback: first available
+    for _, n in ipairs({ "Head", "HumanoidRootPart", "UpperTorso", "Torso", "LowerTorso" }) do
+        local q = model:FindFirstChild(n)
+        if q and q:IsA("BasePart") then return q, q.Position end
+    end
+    return nil, nil
 end
 
 local function keyDown()
@@ -140,29 +160,38 @@ end
 local function getTarget()
     local cam = Cam()
     local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-    local best, bestPart = AIM_FOV_PX, nil
+    local best, bestInfo = AIM_FOV_PX, nil
     for _, e in ipairs(humanoidCache) do
         local model = e.model
         if not model.Parent then continue end
-        local part = getPart(model)
+        local part, pos = getPartAndPos(model)
         if not part then continue end
-        local sp, onScreen = cam:WorldToViewportPoint(part.Position)
+        local sp, onScreen = cam:WorldToViewportPoint(pos)
         if not onScreen then continue end
         local dist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-        if dist < best then best, bestPart = dist, part end
+        if dist < best then
+            best = dist
+            bestInfo = { model = model, part = part }
+        end
     end
-    return bestPart
+    return bestInfo
 end
 
 -- Shared target state (also used by Silent hooks)
-local silentTarget = nil
+local silentTarget = nil   -- { model=..., part=... }
 
 local function getAimPos()
     local t = silentTarget
-    if not t or not t.Parent then return nil end
-    local pos = t.Position
-    local v = t.AssemblyLinearVelocity
-    if typeof(v) == "Vector3" then pos = pos + v * AIM_PREDICT end
+    if not t or not t.model or not t.model.Parent then return nil end
+    local _, pos = getPartAndPos(t.model)
+    if not pos then return nil end
+
+    -- predict horizontal velocity only (don't predict Y / falling)
+    local v = t.part and t.part.AssemblyLinearVelocity
+    if typeof(v) == "Vector3" then
+        local horiz = Vector3.new(v.X, 0, v.Z)
+        pos = pos + horiz * AIM_PREDICT
+    end
     return pos, t
 end
 
@@ -185,21 +214,25 @@ RunService:BindToRenderStep(AIM_BIND, Enum.RenderPriority.Camera.Value + 10, fun
     end
 
     -- lock target on press, keep until released / dead
+    local function validTarget()
+        if not silentTarget then return false end
+        local m = silentTarget.model
+        if not m or not m.Parent then return false end
+        local hum = m:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then return false end
+        return true
+    end
+
     if not wasDown then
         wasDown = true
         silentTarget = getTarget()
-    else
-        if not silentTarget or not silentTarget.Parent then
-            silentTarget = getTarget()
-        else
-            local hum = silentTarget.Parent:FindFirstChildOfClass("Humanoid")
-            if not hum or hum.Health <= 0 then silentTarget = getTarget() end
-        end
+    elseif not validTarget() then
+        silentTarget = getTarget()
     end
 
     if State.Mode == "Silent" then return end  -- Silent handled by hooks
 
-    local pos, t = getAimPos()
+    local pos = getAimPos()
     if not pos then return end
     local cam = Cam()
 
@@ -220,62 +253,91 @@ RunService:BindToRenderStep(AIM_BIND, Enum.RenderPriority.Camera.Value + 10, fun
 end)
 
 -- ============================================================
--- Mode 3: SILENT — redirect bullets by rewriting args / rays
+-- Mode 3: SILENT — redirect bullets without camera move
 -- ============================================================
-do
-    local meta  = getrawmetatable(game)
+local function silentPos()
+    if not (State.Aimbot and State.Mode == "Silent" and silentTarget and silentTarget.model and silentTarget.model.Parent) then
+        return nil
+    end
+    local pos, _ = getAimPos()
+    return pos
+end
+
+-- Try hookmetamethod first (Solara API) — simpler than manual meta edit
+if hookmetamethod then
+    local oldNC
+    oldNC = hookmetamethod(game, "__namecall", function(self, ...)
+        local pos = silentPos()
+        if pos then
+            local method = getnamecallmethod and getnamecallmethod() or ""
+            if method == "FireServer" or method == "InvokeServer" then
+                local args = { ... }
+                local changed = false
+                for i, a in ipairs(args) do
+                    if typeof(a) == "Vector3" then args[i] = pos; changed = true
+                    elseif typeof(a) == "CFrame" then args[i] = CFrame.new(pos); changed = true
+                    end
+                end
+                if changed then return oldNC(self, unpack(args)) end
+            end
+        end
+        return oldNC(self, ...)
+    end)
+
+    -- Hook mouse via __index
+    local oldIndex
+    oldIndex = hookmetamethod(game, "__index", function(self, k)
+        local pos = silentPos()
+        if pos and typeof(self) == "Instance" and self:IsA("PlayerMouse") then
+            if k == "Hit"     then return CFrame.new(pos) end
+            if k == "Target"  then return silentTarget.part end
+            if k == "UnitRay" then
+                local cam = Cam()
+                return Ray.new(cam.CFrame.Position, (pos - cam.CFrame.Position).Unit)
+            end
+        end
+        return oldIndex(self, k)
+    end)
+    print("[NextHub] silent hooks installed (hookmetamethod)")
+elseif getrawmetatable and (setreadonly or make_writeable) and newcclosure then
+    local meta = getrawmetatable(game)
     local setro = setreadonly or make_writeable
     local oldNC = meta.__namecall
     local oldIndex = meta.__index
-
-    if setro and newcclosure and checkcaller and hookfunction then
-        setro(meta, false)
-
-        -- Hook __namecall for FireServer / InvokeServer
-        meta.__namecall = newcclosure(function(self, ...)
-            if State.Aimbot and State.Mode == "Silent" and silentTarget and silentTarget.Parent then
-                local method = getnamecallmethod and getnamecallmethod() or ""
-                if method == "FireServer" or method == "InvokeServer" then
-                    local args = { ... }
-                    local pos = silentTarget.Position
-                    local hit = silentTarget
-                    local changed = false
-                    for i, a in ipairs(args) do
-                        if typeof(a) == "Vector3" then args[i] = pos; changed = true
-                        elseif typeof(a) == "CFrame" then args[i] = CFrame.new(pos); changed = true
-                        elseif typeof(a) == "Instance" and a:IsA("BasePart") then
-                            if a.Name == "Head" or a.Name == "HumanoidRootPart" or a.Name == "UpperTorso"
-                               or a.Name == "Torso" or a.Name == "LowerTorso" then
-                                args[i] = hit; changed = true
-                            end
-                        end
-                    end
-                    if changed then return oldNC(self, unpack(args)) end
-                end
-            end
-            return oldNC(self, ...)
-        end)
-
-        -- Hook __index for Mouse.Hit / Mouse.Target
-        meta.__index = newcclosure(function(self, k)
-            if State.Aimbot and State.Mode == "Silent" and silentTarget and silentTarget.Parent then
-                if typeof(self) == "Instance" and self:IsA("PlayerMouse") then
-                    if k == "Hit" then return CFrame.new(silentTarget.Position) end
-                    if k == "Target" then return silentTarget end
-                    if k == "UnitRay" then
-                        local cam = Cam()
-                        return Ray.new(cam.CFrame.Position, (silentTarget.Position - cam.CFrame.Position).Unit)
+    setro(meta, false)
+    meta.__namecall = newcclosure(function(self, ...)
+        local pos = silentPos()
+        if pos then
+            local method = getnamecallmethod and getnamecallmethod() or ""
+            if method == "FireServer" or method == "InvokeServer" then
+                local args = { ... }
+                local changed = false
+                for i, a in ipairs(args) do
+                    if typeof(a) == "Vector3" then args[i] = pos; changed = true
+                    elseif typeof(a) == "CFrame" then args[i] = CFrame.new(pos); changed = true
                     end
                 end
+                if changed then return oldNC(self, unpack(args)) end
             end
-            return oldIndex(self, k)
-        end)
-
-        setro(meta, true)
-        print("[NextHub] silent hooks installed")
-    else
-        warn("[NextHub] executor missing setreadonly/newcclosure/hookfunction — Silent mode disabled")
-    end
+        end
+        return oldNC(self, ...)
+    end)
+    meta.__index = newcclosure(function(self, k)
+        local pos = silentPos()
+        if pos and typeof(self) == "Instance" and self:IsA("PlayerMouse") then
+            if k == "Hit"     then return CFrame.new(pos) end
+            if k == "Target"  then return silentTarget.part end
+            if k == "UnitRay" then
+                local cam = Cam()
+                return Ray.new(cam.CFrame.Position, (pos - cam.CFrame.Position).Unit)
+            end
+        end
+        return oldIndex(self, k)
+    end)
+    setro(meta, true)
+    print("[NextHub] silent hooks installed (raw meta)")
+else
+    warn("[NextHub] Silent mode unavailable (executor missing hookmetamethod + hookfunction)")
 end
 
 -- ============================================================
