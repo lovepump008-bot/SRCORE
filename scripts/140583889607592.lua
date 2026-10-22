@@ -151,9 +151,12 @@ local function getTarget()
     return bestPart
 end
 
--- Aim: bind AFTER camera priority so our writes aren't wiped
+-- Aim: 3-method attempt
 local AIM_BIND_NAME = "SRCORE_AIM"
-local MMR = rawget(getfenv(), "mousemoverel") or mousemoverel
+local MMR  = rawget(getfenv(), "mousemoverel") or mousemoverel
+local VIM  = pcall(function() return game:GetService("VirtualInputManager") end) and game:GetService("VirtualInputManager") or nil
+
+print("[NextHub] mmr=" .. tostring(MMR ~= nil) .. "  vim=" .. tostring(VIM ~= nil))
 
 local function keyDown()
     return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
@@ -174,41 +177,46 @@ RunService:BindToRenderStep(AIM_BIND_NAME, Enum.RenderPriority.Camera.Value + 10
     if not State.Aimbot then return end
     if not keyDown() then return end
 
+    local cacheSize = #humanoidCache
     local target = getTarget()
-    if not target then dbg("no target in FOV"); return end
+    if not target then
+        dbg("no target | humanoidCache=" .. cacheSize)
+        return
+    end
 
     local pos = target.Position
     local v = target.AssemblyLinearVelocity
     if typeof(v) == "Vector3" then pos = pos + v * AIM_PREDICT end
 
     local cam = Cam()
+    local sp, onScreen = cam:WorldToViewportPoint(pos)
+    if not onScreen then dbg("target not on screen"); return end
 
-    -- method 1: mousemoverel (OS-level — moves OS mouse, game sees fresh input)
-    local didMMR = false
-    if MMR then
-        local sp, onScreen = cam:WorldToViewportPoint(pos)
-        if onScreen then
-            local center = cam.ViewportSize / 2
-            local dx = (sp.X - center.X) * AIM_SMOOTH
-            local dy = (sp.Y - center.Y) * AIM_SMOOTH
-            if math.abs(dx) > 0.1 or math.abs(dy) > 0.1 then
-                local ok = pcall(MMR, dx, dy)
-                didMMR = ok
-            else
-                didMMR = true  -- already centered
-            end
-        end
+    local center = cam.ViewportSize / 2
+    local dx = (sp.X - center.X) * AIM_SMOOTH
+    local dy = (sp.Y - center.Y) * AIM_SMOOTH
+
+    -- method 1: mousemoverel
+    local m1 = false
+    if MMR then m1 = pcall(MMR, dx, dy) end
+
+    -- method 2: VirtualInputManager
+    local m2 = false
+    if VIM then
+        m2 = pcall(function()
+            VIM:SendMouseMoveEvent(sp.X, sp.Y, nil)
+        end)
     end
 
-    -- method 2: ALSO write CFrame
+    -- method 3: direct CFrame
     local cfBefore = cam.CFrame
     local goal = CFrame.new(cam.CFrame.Position, pos)
-    local okCF = pcall(function() cam.CFrame = cam.CFrame:Lerp(goal, AIM_SMOOTH) end)
+    local m3 = pcall(function() cam.CFrame = cam.CFrame:Lerp(goal, AIM_SMOOTH) end)
     local cfChanged = (cam.CFrame.LookVector - cfBefore.LookVector).Magnitude > 0.0001
 
-    dbg(string.format("target=%s | mmr=%s | cfSet=%s | cfChanged=%s",
+    dbg(string.format("tgt=%s | dx=%.0f dy=%.0f | mmr=%s vim=%s cf=%s(moved=%s)",
         target.Parent and target.Parent.Name or "?",
-        tostring(didMMR), tostring(okCF), tostring(cfChanged)))
+        dx, dy, tostring(m1), tostring(m2), tostring(m3), tostring(cfChanged)))
 end)
 
 -- ============================================================
