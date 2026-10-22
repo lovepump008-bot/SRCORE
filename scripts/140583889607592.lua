@@ -23,11 +23,17 @@ local State = {
 
 -- fixed sensible defaults (no sliders)
 local AIM_FOV       = 300        -- wide net
-local AIM_SMOOTH    = 0.5        -- half-snap
+local AIM_SMOOTH    = 0.65       -- stronger
 local AIM_PREDICT   = 0.12
 local ESP_MAX       = 20
 local ESP_MAX_DIST  = 1000
-local AIM_KEY_MOUSE = Enum.UserInputType.MouseButton2  -- right click = aim
+local AIM_KEY_MOUSE = Enum.UserInputType.MouseButton2
+
+-- diagnostic once
+do
+    local mmr = rawget(getfenv(), "mousemoverel") or mousemoverel
+    print("[NextHub] mousemoverel " .. (mmr and "AVAILABLE" or "MISSING"))
+end
 
 -- ============================================================
 -- Window
@@ -62,6 +68,7 @@ do
     B:AddButton("Hide UI now", function() Library.Toggled = false end)
     B:AddButton("UNLOAD (remove everything)", function()
         State.Aimbot = false; State.ESP = false; State.NameTag = false; State.NoRecoil = false
+        pcall(function() RunService:UnbindFromRenderStep("SRCORE_AIM") end)
         task.wait(0.2)
         for _, d in ipairs(workspace:GetDescendants()) do
             if d:IsA("Highlight") or d:IsA("BillboardGui") then d:Destroy() end
@@ -145,7 +152,11 @@ local function getTarget()
     return bestPart
 end
 
-RunService.RenderStepped:Connect(function()
+-- Aim: bind AFTER camera priority so our writes aren't wiped
+local AIM_BIND_NAME = "SRCORE_AIM"
+local MMR = rawget(getfenv(), "mousemoverel") or mousemoverel
+
+RunService:BindToRenderStep(AIM_BIND_NAME, Enum.RenderPriority.Camera.Value + 10, function()
     if not State.Aimbot then return end
     if not UIS:IsMouseButtonPressed(AIM_KEY_MOUSE) then return end
     local target = getTarget()
@@ -156,18 +167,23 @@ RunService.RenderStepped:Connect(function()
     if typeof(v) == "Vector3" then pos = pos + v * AIM_PREDICT end
 
     local cam = Cam()
-    -- try mousemoverel first; fallback to CFrame
-    local mmr = rawget(getfenv(), "mousemoverel") or mousemoverel
-    if mmr then
+
+    -- method 1: mousemoverel (OS-level — survives game camera scripts)
+    if MMR then
         local sp, onScreen = cam:WorldToViewportPoint(pos)
         if onScreen then
             local center = cam.ViewportSize / 2
-            mmr((sp.X - center.X) * AIM_SMOOTH, (sp.Y - center.Y) * AIM_SMOOTH)
+            local dx = (sp.X - center.X) * AIM_SMOOTH
+            local dy = (sp.Y - center.Y) * AIM_SMOOTH
+            if math.abs(dx) > 0.1 or math.abs(dy) > 0.1 then
+                pcall(MMR, dx, dy)
+            end
         end
-    else
-        local goal = CFrame.new(cam.CFrame.Position, pos)
-        cam.CFrame = cam.CFrame:Lerp(goal, AIM_SMOOTH)
     end
+
+    -- method 2: ALSO write CFrame (works for games that use Camera.CFrame directly)
+    local goal = CFrame.new(cam.CFrame.Position, pos)
+    pcall(function() cam.CFrame = cam.CFrame:Lerp(goal, AIM_SMOOTH) end)
 end)
 
 -- ============================================================
