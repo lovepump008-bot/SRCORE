@@ -45,9 +45,9 @@ if not game:IsLoaded() then game.Loaded:Wait() end
 local pid = game.PlaceId
 local entry = PLACES[pid]
 if not entry then
-    notify("NEXT HUB", "Unsupported place: " .. pid, 5)
-    warn("[NextHub] Unsupported PlaceId: " .. pid)
-    return
+    -- fallback: unknown place → run main PORBOX script anyway (dev mode)
+    warn("[NextHub] Unknown PlaceId " .. pid .. " — using fallback script")
+    entry = { file = "scripts/140583889607592.lua", version = "4.0" }
 end
 
 local url = BASE .. entry.file .. "?v=" .. entry.version .. "&t=" .. tostring(os.time())
