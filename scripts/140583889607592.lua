@@ -22,7 +22,7 @@ local State = {
 }
 
 -- fixed sensible defaults (no sliders)
-local AIM_FOV       = 300        -- wide net
+local AIM_FOV_PX    = 500        -- pixel radius from crosshair (no tan math — direct)
 local AIM_SMOOTH    = 0.65       -- stronger
 local AIM_PREDICT   = 0.12
 local ESP_MAX       = 20
@@ -137,8 +137,7 @@ end
 local function getTarget()
     local cam = Cam()
     local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-    local fovPx = math.tan(math.rad(AIM_FOV) / 2) * cam.ViewportSize.Y
-    local best, bestPart = fovPx, nil
+    local best, bestPart = AIM_FOV_PX, nil
     for _, e in ipairs(humanoidCache) do
         local model = e.model
         if not model.Parent then continue end
