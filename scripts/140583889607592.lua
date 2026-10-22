@@ -18,6 +18,7 @@ local State = {
     Mode      = "Mouse Delta",
     AimPart   = "Head",
     SmoothLerp= 0.5,
+    HeadYBoost= 0.0,       -- additional Y offset (tune per game)
     ESP       = false,
     NameTag   = false,
     NoRecoil  = false,
@@ -60,9 +61,23 @@ do
         Callback = function(v) State.AimPart = v end,
     })
     L:AddSlider("SmoothLerp", {
-        Text = "Smooth strength", Default = 0.35, Min = 0.05, Max = 1, Rounding = 2,
+        Text = "Smooth strength", Default = 0.5, Min = 0.05, Max = 1, Rounding = 2,
         Callback = function(v) State.SmoothLerp = v end,
     })
+    L:AddSlider("HeadYBoost", {
+        Text = "Head Y boost (+studs)", Default = 0.0, Min = -2, Max = 5, Rounding = 1,
+        Callback = function(v) State.HeadYBoost = v end,
+    })
+    L:AddButton("Dump target (debug)", function()
+        if not silentTarget or not silentTarget.model then print("no target"); return end
+        local m = silentTarget.model
+        print("=== " .. m.Name .. " parts ===")
+        for _, c in ipairs(m:GetChildren()) do
+            if c:IsA("BasePart") then
+                print(string.format("  %-25s  Y=%.2f", c.Name, c.Position.Y))
+            end
+        end
+    end)
     L:AddToggle("NoRecoil", { Text = "No Recoil (cam lock)", Default = false,
         Callback = function(v) State.NoRecoil = v end })
 
@@ -135,22 +150,27 @@ local HEAD_OFFSET_R6  = Vector3.new(0, 1.0, 0)
 -- Returns {part=BasePart, pos=Vector3} — pos is adjusted so Head mode truly hits head
 local function getPartAndPos(model)
     local wanted = State.AimPart
+    local boost = Vector3.new(0, State.HeadYBoost or 0, 0)
+
     local p = model:FindFirstChild(wanted)
     if p and p:IsA("BasePart") then
+        -- Head found: still add user boost (negative to lower, positive to raise)
+        if wanted == "Head" then
+            return p, p.Position + boost
+        end
         return p, p.Position
     end
 
-    -- aim at Head requested, but no "Head" child → compute from HRP + offset
+    -- aim at Head requested, no "Head" child → compute from HRP + offset + boost
     if wanted == "Head" then
         local hrp = model:FindFirstChild("HumanoidRootPart")
         if hrp and hrp:IsA("BasePart") then
             local rig = model:FindFirstChildOfClass("Humanoid")
             local off = (rig and rig.RigType == Enum.HumanoidRigType.R6) and HEAD_OFFSET_R6 or HEAD_OFFSET_R15
-            return hrp, hrp.Position + off
+            return hrp, hrp.Position + off + boost
         end
     end
 
-    -- fallback: first available
     for _, n in ipairs({ "Head", "HumanoidRootPart", "UpperTorso", "Torso", "LowerTorso" }) do
         local q = model:FindFirstChild(n)
         if q and q:IsA("BasePart") then return q, q.Position end
