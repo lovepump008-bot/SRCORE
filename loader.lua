@@ -15,8 +15,8 @@ local BASE = "https://raw.githubusercontent.com/lovepump008-bot/SRCORE/main/"
 
 -- PlaceId -> { file, version }
 local PLACES = {
-    [140583889607592] = { file = "scripts/140583889607592.lua", version = "1.1" },
-    [86075649546448]  = { file = "scripts/140583889607592.lua", version = "1.1" },  -- PORBOX PVP
+    [140583889607592] = { file = "scripts/140583889607592.lua", version = "2.0" },
+    [86075649546448]  = { file = "scripts/140583889607592.lua", version = "2.0" },  -- PORBOX PVP
 }
 
 local function fetch(url)
