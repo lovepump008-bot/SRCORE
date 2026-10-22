@@ -130,10 +130,13 @@ do
     pcall(function() SaveManager:LoadAutoloadConfig() end)
 end
 
--- Menu toggle via R-Shift
-if Library.SetMenuKeybind then
-    pcall(function() Library:SetMenuKeybind(Enum.KeyCode.RightShift) end)
-end
+-- Menu toggle via R-Shift (hook UIS directly — SetMenuKeybind may not exist in this Linoria version)
+UIS.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        Library.Toggled = not Library.Toggled
+    end
+end)
 
 -- ============================================================
 -- 4) Target selection
